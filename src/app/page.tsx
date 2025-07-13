@@ -1,78 +1,140 @@
 "use client";
 
 import Link from "next/link";
-import React, { useState, useRef, useEffect } from "react";
+import React, { useRef, useEffect } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 export default function Home() {
-  const [isLoading, setIsLoading] = useState(true);
-  const [progress, setProgress] = useState(0);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const mountRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const video = videoRef.current;
+    // Initialize Three.js scene
+    const mount = mountRef.current;
+    if (!mount) return;
 
-    if (!video) return;
+    // Scene setup
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 0, 3.5);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    mount.appendChild(renderer.domElement);
 
-    const handleProgress = () => {
-      if (video.buffered.length > 0) {
-        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-        const duration = video.duration;
-        if (duration > 0) {
-          setProgress((bufferedEnd / duration) * 100);
-        }
+    const orbitCtrl = new OrbitControls(camera, renderer.domElement);
+    orbitCtrl.enableDamping = true;
+
+    // Textures loading
+    const textureLoader = new THREE.TextureLoader();
+    const colorMap = textureLoader.load("/textures/earth/00_earthmap1k.jpg");
+    const elevMap = textureLoader.load("/textures/earth/01_earthbump1k.jpg");
+    const alphaMap = textureLoader.load("/textures/earth/02_earthspec1k.jpg");
+
+    const globeGroup = new THREE.Group();
+    scene.add(globeGroup);
+
+    // Wireframe globe
+    const geo = new THREE.IcosahedronGeometry(1, 10);
+    const mat = new THREE.MeshBasicMaterial({ 
+      color: 0x202020,
+      wireframe: true,
+    });
+    const cube = new THREE.Mesh(geo, mat);
+    globeGroup.add(cube);
+
+    // Vertex earth
+    const detail = 120;
+    const pointsGeo = new THREE.IcosahedronGeometry(1, detail);
+
+    const vertexShader = `
+      uniform float size;
+      uniform sampler2D elevTexture;
+
+      varying vec2 vUv;
+      varying float vVisible;
+
+      void main() {
+        vUv = uv;
+        vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+        float elv = texture2D(elevTexture, vUv).r;
+        vec3 vNormal = normalMatrix * normal;
+        vVisible = step(0.0, dot( -normalize(mvPosition.xyz), normalize(vNormal)));
+        mvPosition.z += 0.35 * elv;
+        gl_PointSize = size;
+        gl_Position = projectionMatrix * mvPosition;
       }
+    `;
+    const fragmentShader = `
+      uniform sampler2D colorTexture;
+      uniform sampler2D alphaTexture;
+
+      varying vec2 vUv;
+      varying float vVisible;
+
+      void main() {
+        if (floor(vVisible + 0.1) == 0.0) discard;
+        float alpha = 1.0 - texture2D(alphaTexture, vUv).r;
+        vec3 color = texture2D(colorTexture, vUv).rgb;
+        gl_FragColor = vec4(color, alpha);
+      }
+    `;
+    const uniforms = {
+      size: { type: "f", value: 4.0 },
+      colorTexture: { type: "t", value: colorMap },
+      elevTexture: { type: "t", value: elevMap },
+      alphaTexture: { type: "t", value: alphaMap }
     };
+    const pointsMat = new THREE.ShaderMaterial({
+      uniforms: uniforms,
+      vertexShader,
+      fragmentShader,
+      transparent: true
+    });
 
-    const handleCanPlay = () => {
-      // Small delay to ensure smooth transition
-      setTimeout(() => setIsLoading(false), 500);
+    const points = new THREE.Points(pointsGeo, pointsMat);
+    globeGroup.add(points);
+
+    // Lighting
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x080820, 3);
+    scene.add(hemiLight);
+
+    // Animation loop
+    const animate = () => {
+      renderer.render(scene, camera);
+      globeGroup.rotation.y += 0.002;
+      orbitCtrl.update();
+      requestAnimationFrame(animate);
     };
+    animate();
 
-    video.addEventListener('progress', handleProgress);
-    video.addEventListener('canplay', handleCanPlay);
-    video.addEventListener('loadeddata', handleCanPlay);
+    // Handle resize
+    const handleResize = () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    };
+    window.addEventListener('resize', handleResize);
 
-    // Check if video is already loaded
-    if (video.readyState >= 3) {
-      handleCanPlay();
-    }
-
+    // Cleanup
     return () => {
-      video.removeEventListener('progress', handleProgress);
-      video.removeEventListener('canplay', handleCanPlay);
-      video.removeEventListener('loadeddata', handleCanPlay);
+      window.removeEventListener('resize', handleResize);
+      if (mount && renderer.domElement) {
+        mount.removeChild(renderer.domElement);
+      }
+      renderer.dispose();
     };
   }, []);
 
   return (
     <div className="w-full h-screen flex flex-col justify-center relative">
-      {/* Loading overlay */}
-      {isLoading && (
-        <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center">
-          <div className="w-64 h-1 bg-gray-700 rounded-full overflow-hidden mb-4">
-            <div
-              className="h-full bg-white transition-all duration-300 ease-out"
-              style={{ width: `${progress}%` }}
-            ></div>
-          </div>
-          <p className="text-white text-lg">Loading...</p>
-          <p className="text-gray-400 text-sm mt-2">{Math.round(progress)}%</p>
-        </div>
-      )}
+      {/* Three.js container */}
+      <div 
+        ref={mountRef} 
+        className="w-full h-screen fixed top-0 left-0 -z-[9999]"
+      />
 
-      <div className="w-full h-screen fixed top-0 left-0 -z-[9999]">
-        <video
-          ref={videoRef}
-          src="/videos/Earthlow.mp4"
-          autoPlay
-          loop
-          muted
-          playsInline
-          className="w-full h-full object-cover"
-        />
-      </div>
-
-      <div className={`w-full h-full z-0 flex flex-col justify-around pt-48 transition-opacity duration-500 ${isLoading ? 'opacity-0' : 'opacity-100'}`}>
+      <div className="w-full h-full z-0 flex flex-col justify-around pt-48">
         <div className="pl-10">
           <p className="text-2xl">Welcome to</p>
           <h1 className="text-5xl font-extrabold">SEDS ANTARIKSH</h1>
